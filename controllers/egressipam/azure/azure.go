@@ -41,6 +41,7 @@ type AzureInfra struct {
 	compute           *compute.VirtualMachinesClient
 	vnet              *network.VirtualNetworksClient
 	networkInterface  *network.InterfacesClient
+	subnets           *network.SubnetsClient
 	log               logr.Logger
 	selectedInstances map[string]*compute.VirtualMachine
 }
@@ -50,7 +51,7 @@ func NewAzureInfra(directClient client.Client, rc *reconcilecontext.ReconcileCon
 		log: ctrl.Log.WithName("AzureInfra"),
 		dc:  directClient,
 	}
-	compute, vnet, networkInterface, err := azureInfra.getAzureClients(rc.Infrastructure, rc.CloudCredentialsSecret)
+	compute, vnet, networkInterface, subnets, err := azureInfra.getAzureClients(rc.Infrastructure, rc.CloudCredentialsSecret)
 	if err != nil {
 		azureInfra.log.Error(err, "unable to create aws client")
 		return nil, err
@@ -58,6 +59,7 @@ func NewAzureInfra(directClient client.Client, rc *reconcilecontext.ReconcileCon
 	azureInfra.compute = compute
 	azureInfra.vnet = vnet
 	azureInfra.networkInterface = networkInterface
+	azureInfra.subnets = subnets
 	selectedInstances, err := azureInfra.getAzureInstances(rc.Context, rc.Infrastructure.Status.PlatformStatus.Azure.ResourceGroupName, rc.SelectedNodes)
 	if err != nil {
 		azureInfra.log.Error(err, "unable to retrieve selected instances")
@@ -87,6 +89,9 @@ func (i *AzureInfra) getAzureClients(infrastructure *ocpconfigv1.Infrastructure,
 	networkClient := network.NewInterfacesClient(subscription)
 	networkClient.Authorizer = authorizer
 	networkClient.AddToUserAgent(userAgent)
+	subnetsClient := network.NewSubnetsClient(subscription)
+	subnetsClient.Authorizer = authorizer
+	subnetsClient.AddToUserAgent(userAgent)
 	return &vmClient, &vnetClient, &networkClient, nil
 }
 
@@ -215,22 +220,53 @@ func (i *AzureInfra) getAzureUsedIPsByCIDR(rc *reconcilecontext.ReconcileContext
 		}
 		//get subnets
 		for _, subnet := range *result.Subnets {
-			for _, ipConfiguration := range *subnet.IPConfigurations {
-				if ipConfiguration.PrivateIPAddress == nil {
-					continue
-				}
-				IP := net.ParseIP(*ipConfiguration.PrivateIPAddress)
-				if IP == nil {
-					i.log.Error(err, "unable to parse ", "IP", *ipConfiguration.PrivateIPAddress)
-					return map[string][]net.IP{}, err
-				}
-				if CIDR.Contains(IP) {
-					usedIPsByCIDR[cidr] = append(usedIPsByCIDR[cidr], IP)
-				}
+
+			ipConfigurations, err := i.getSubnetIPConfigurations(rc, vnet, &subnet)
+
+			if err != nil {
+				i.log.Error(err, "unable to get ipConfigurations for subnet ", "Subnet", subnet.Name)
+				return map[string][]net.IP{}, err
 			}
+
+			if ipConfigurations != nil {
+
+				for _, ipConfiguration := range *ipConfigurations {
+					if ipConfiguration.PrivateIPAddress == nil {
+						continue
+					}
+					IP := net.ParseIP(*ipConfiguration.PrivateIPAddress)
+					if IP == nil {
+						i.log.Error(err, "unable to parse ", "IP", *ipConfiguration.PrivateIPAddress)
+						return map[string][]net.IP{}, err
+					}
+					if CIDR.Contains(IP) {
+						usedIPsByCIDR[cidr] = append(usedIPsByCIDR[cidr], IP)
+					}
+				}
+
+			} else {
+				i.log.Info("No IPConfigurations found in subnet", "Subnet", subnet.Name, "Virtual Network", vnet)
+			}
+
 		}
 	}
 	return usedIPsByCIDR, nil
+}
+
+func (i *AzureInfra) getSubnetIPConfigurations(rc *reconcilecontext.ReconcileContext, vnet string, s *network.Subnet) (*[]network.IPConfiguration, error) {
+
+	if s.IPConfigurations != nil {
+		return s.IPConfigurations, nil
+	}
+
+	result, err := i.subnets.Get(rc.Context, rc.Infrastructure.Status.PlatformStatus.Azure.NetworkResourceGroupName, vnet, *s.Name, "")
+	if err != nil {
+		i.log.Error(err, "unable to get", "subnet", vnet)
+		return nil, err
+	}
+
+	return result.IPConfigurations, nil
+
 }
 
 func (i *AzureInfra) getVirtualNetwork(rc *reconcilecontext.ReconcileContext) (string, error) {
