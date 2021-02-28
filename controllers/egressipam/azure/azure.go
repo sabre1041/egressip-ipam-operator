@@ -69,16 +69,16 @@ func NewAzureInfra(directClient client.Client, rc *reconcilecontext.ReconcileCon
 	return azureInfra, nil
 }
 
-func (i *AzureInfra) getAzureClients(infrastructure *ocpconfigv1.Infrastructure, cloudCredentialsSecret *corev1.Secret) (*compute.VirtualMachinesClient, *network.VirtualNetworksClient, *network.InterfacesClient, error) {
+func (i *AzureInfra) getAzureClients(infrastructure *ocpconfigv1.Infrastructure, cloudCredentialsSecret *corev1.Secret) (*compute.VirtualMachinesClient, *network.VirtualNetworksClient, *network.InterfacesClient, *network.SubnetsClient, error) {
 	clientID, clientSecret, tenantID, subscription, err := i.getAzureCredentials(cloudCredentialsSecret)
 	if err != nil {
 		i.log.Error(err, "unable to get azure credentials")
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	authorizer, err := getAuthorizer(clientID, clientSecret, tenantID)
 	if err != nil {
 		i.log.Error(err, "unable to get azure authorizer")
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	vmClient := compute.NewVirtualMachinesClient(subscription)
 	vmClient.Authorizer = authorizer
@@ -92,7 +92,7 @@ func (i *AzureInfra) getAzureClients(infrastructure *ocpconfigv1.Infrastructure,
 	subnetsClient := network.NewSubnetsClient(subscription)
 	subnetsClient.Authorizer = authorizer
 	subnetsClient.AddToUserAgent(userAgent)
-	return &vmClient, &vnetClient, &networkClient, nil
+	return &vmClient, &vnetClient, &networkClient, &subnetsClient, nil
 }
 
 func (i *AzureInfra) getAzureCredentials(cloudCredentialsSecret *corev1.Secret) (clientID string, clientSecret string, tenantID string, subscription string, err error) {
